@@ -1,32 +1,39 @@
+@file:JvmName("Abendigo")
+
 package org.abendigo
 
-import co.paralleluniverse.fibers.*
-import co.paralleluniverse.kotlin.fiber
-import co.paralleluniverse.strands.Strand
+import org.abendigo.csgo.entities
 import org.abendigo.plugin.csgo.*
 import java.lang.management.ManagementFactory
 import java.util.concurrent.TimeUnit
+import kotlin.concurrent.thread
 
-@Suspendable
-fun sleep(duration: Long, timeUnit: TimeUnit = TimeUnit.MILLISECONDS) = Strand.sleep(duration, timeUnit)
+@JvmOverloads
+fun sleep(duration: Long, timeUnit: TimeUnit = TimeUnit.MILLISECONDS) = Thread.sleep(timeUnit.toMillis(duration))
 
+@JvmOverloads
 fun sleep(duration: Int, timeUnit: TimeUnit = TimeUnit.MILLISECONDS) = sleep(duration.toLong(), timeUnit)
 
-fun <T> every(duration: Int, timeUnit: TimeUnit = TimeUnit.MILLISECONDS, action: () -> T):
-		Fiber<Unit> = every(duration.toLong(), timeUnit, action)
+@JvmOverloads
+inline fun <T> every(duration: Long, timeUnit: TimeUnit = TimeUnit.MILLISECONDS, crossinline action: () -> T) {
+	thread {
+		do {
+			action()
+			sleep(duration, timeUnit)
+		} while (!Thread.interrupted())
+	}
+}
 
-inline fun <T> every(duration: Long, timeUnit: TimeUnit = TimeUnit.MILLISECONDS, crossinline action: () -> T) =
-		fiber @Suspendable {
-			do {
-				action()
-				sleep(duration, timeUnit)
-			} while (!Strand.interrupted())
-		}
+@JvmOverloads
+fun <T> every(duration: Int, timeUnit: TimeUnit = TimeUnit.MILLISECONDS, action: () -> T): Unit
+		= every(duration.toLong(), timeUnit, action)
 
 open class UpdateableLazy<T>(private val lazy: () -> T) {
 
 	@Volatile private var current: T? = null
 	@Volatile private var previous: T? = null
+
+	@Volatile private var updateStamp: Long = 0L
 
 	fun get(): T {
 		if (current == null) +this
@@ -38,25 +45,37 @@ open class UpdateableLazy<T>(private val lazy: () -> T) {
 	fun update(): T {
 		previous = current
 		current = lazy()
+		updateStamp = System.nanoTime()
 		return current!!
 	}
 
 	operator fun unaryPlus() = update()
 
-	fun rollback(): T {
-		current = previous ?: return this()
-		return current!!
+	fun lastUpdate() = System.nanoTime() - updateStamp
+
+	@JvmOverloads
+	fun updatedSince(duration: Long, timeUnit: TimeUnit = TimeUnit.MILLISECONDS) = lastUpdate() >= timeUnit.toNanos(duration)
+
+	@JvmOverloads
+	fun updateIf(duration: Long, timeUnit: TimeUnit = TimeUnit.MILLISECONDS) = when {
+		updatedSince(duration, timeUnit) -> this()
+		else -> +this
 	}
 
-	operator fun unaryMinus() = rollback()
+	operator fun invoke(duration: Long, timeUnit: TimeUnit = TimeUnit.MILLISECONDS) = updateIf(duration, timeUnit)
 
 }
 
 fun <T> updateableLazy(lazy: () -> T) = UpdateableLazy(lazy)
 
 fun main(args: Array<String>) {
-	println("Process@${ManagementFactory.getRuntimeMXBean().name}")
+	println("Process ${ManagementFactory.getRuntimeMXBean().name}")
+
+	every(8, TimeUnit.SECONDS) { +entities }
+
+	// TODO make a proper plugin system
 	BunnyHopPlugin().enable()
 	RadarPlugin().enable()
-	Thread.sleep(Long.MAX_VALUE)
+	ESPPlugin().enable()
+	// AimAssistPlugin().enable()
 }
